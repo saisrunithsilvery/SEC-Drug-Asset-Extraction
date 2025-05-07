@@ -177,6 +177,34 @@ class AnalysisService:
             logger.error(f"Error identifying assets for {self.ticker}: {str(e)}")
             raise
     
+    def _normalize_complex_value(self, value: Any) -> str:
+        """
+        Convert complex data types (lists, dicts) to formatted strings.
+        
+        Args:
+            value: Value to normalize
+            
+        Returns:
+            Normalized string value
+        """
+        if value is None:
+            return "Not specified"
+        
+        if isinstance(value, str):
+            return value
+        
+        # Convert complex objects to formatted strings
+        try:
+            if isinstance(value, (dict, list)):
+                # For pretty formatting, use indent
+                return json.dumps(value, indent=2)
+            else:
+                return str(value)
+        except Exception as e:
+            logger.warning(f"Error formatting complex value: {str(e)}")
+            # Return a simple string representation as fallback
+            return str(value)
+    
     def extract_asset_details(self, asset: str) -> Optional[Dict[str, Any]]:
         """
         Extract detailed information for a specific drug/program.
@@ -215,6 +243,8 @@ class AnalysisService:
                       Default to 'Not specified' if missing.
                     - References: Filing accession number, form type (e.g., 10-K), and filed date from metadata. Default to 'Not specified' if missing.
                     Merge data from multiple chunks if applicable. Return a JSON dictionary.
+                    
+                    IMPORTANT: The response must be formatted as a valid JSON object. Return only a single plain JSON object.
                 """),
                 ("human", "Context: {context}\nExtract details for asset: {asset}")
             ])
@@ -250,6 +280,11 @@ class AnalysisService:
                 if details.get("Name/Number") != asset and asset != "":
                     logger.warning(f"Name mismatch: Asset={asset}, Returned Name={details.get('Name/Number')}")
                     details["Name/Number"] = asset
+                
+                # Normalize complex values to strings
+                for key in details.keys():
+                    if not isinstance(details[key], str):
+                        details[key] = self._normalize_complex_value(details[key])
                 
                 logger.info(f"Extracted details for {asset} in {self.ticker}")
                 return details
@@ -307,15 +342,21 @@ class AnalysisService:
                 name = details.get("Name/Number", "Unknown")
                 logger.info(f"Processing asset: {name}")
                 
+                # Process and normalize complex values
+                processed_details = details.copy()
+                for key in processed_details.keys():
+                    if not isinstance(processed_details[key], str):
+                        processed_details[key] = self._normalize_complex_value(processed_details[key])
+                
                 # Update fields with non-empty values
                 merged_data[name].update({
                     "Name/Number": name,
-                    "Mechanism of Action": details.get("Mechanism of Action", "Not specified"),
-                    "Target(s)": details.get("Target(s)", "Not specified"),
-                    "Indication": details.get("Indication", "Not specified"),
-                    "Animal Models/Preclinical Data": details.get("Animal Models/Preclinical Data", "Not specified"),
-                    "Clinical Trials": details.get("Clinical Trials", "Not specified"),
-                    "Upcoming Milestones": details.get("Upcoming Milestones", "Not specified")
+                    "Mechanism of Action": processed_details.get("Mechanism of Action", "Not specified"),
+                    "Target(s)": processed_details.get("Target(s)", "Not specified"),
+                    "Indication": processed_details.get("Indication", "Not specified"),
+                    "Animal Models/Preclinical Data": processed_details.get("Animal Models/Preclinical Data", "Not specified"),
+                    "Clinical Trials": processed_details.get("Clinical Trials", "Not specified"),
+                    "Upcoming Milestones": processed_details.get("Upcoming Milestones", "Not specified")
                 })
                 
                 # Handle references properly
@@ -345,6 +386,11 @@ class AnalysisService:
             # Create final data structure for output
             final_data = []
             for name, data in merged_data.items():
+                # Ensure all values are strings for Pydantic validation
+                for key in data.keys():
+                    if key != "References" and not isinstance(data[key], str):
+                        data[key] = self._normalize_complex_value(data[key])
+                
                 final_data.append({
                     "Name/Number": name,
                     "Mechanism of Action": data["Mechanism of Action"],
