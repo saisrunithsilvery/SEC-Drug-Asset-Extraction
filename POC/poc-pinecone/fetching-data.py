@@ -1,4 +1,5 @@
 import os
+import boto3
 from sec_api import QueryApi, RenderApi
 import pandas as pd
 import logging
@@ -6,6 +7,12 @@ import json
 import requests
 import re
 import time
+import io
+from botocore.exceptions import ClientError
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -19,10 +26,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # API keys and configuration
-SEC_API_KEY = os.getenv("SEC_API_KEY", "")  # Replace with your key
+SEC_API_KEY = os.getenv("SEC_API_KEY")  # Will be loaded from .env file
 USER_AGENT = "saisrunith saisrunith12@gmail.com"  # Required for SEC API compliance
 query_api = QueryApi(api_key=SEC_API_KEY)
 render_api = RenderApi(api_key=SEC_API_KEY)
+
+# S3 configuration
+BUCKET_NAME = "k-cap-hfund"
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")  # Get from environment variable
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")  # Get from environment variable
+
+# Initialize S3 client with credentials
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name='us-east-1'  # Specify the region to match your bucket
+)
 
 def get_cik_from_ticker(ticker: str) -> str:
     """Resolve ticker to CIK using SEC's company_tickers.json."""
@@ -81,48 +101,46 @@ def download_filing_content(filing: dict) -> dict:
         logger.error(f"Error downloading filing {filing['accessionNo']}: {str(e)}")
         return {"filing": filing, "content": None}
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('sec_pipeline.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
-
 def sanitize_filename(filename: str) -> str:
     """Sanitize file names to remove or replace invalid characters."""
     # Replace invalid characters (e.g., /) with underscores
     return re.sub(r'[^\w\-\.]', '_', filename)    
 
-def save_filings(ticker: str, filings: list):
-    """Save filings metadata and content to disk with robust directory handling."""
+def upload_to_s3(content, key):
+    """Upload content to S3 bucket with specified key."""
     try:
-        # Ensure the directory exists
-        output_dir = f"filings/{ticker}"
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-            logger.info(f"Created directory {output_dir}")
-        else:
-            logger.info(f"Directory {output_dir} already exists")
+        s3_client.put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=content
+        )
+        logger.info(f"Successfully uploaded to s3://{BUCKET_NAME}/{key}")
+        return f"s3://{BUCKET_NAME}/{key}"
+    except ClientError as e:
+        logger.error(f"Failed to upload to S3: {str(e)}")
+        raise
 
+def save_filings_to_s3(ticker: str, filings: list):
+    """Save filings metadata and content to S3 bucket with the same folder structure."""
+    try:
+        # Define base path in S3 bucket
+        base_path = f"filings/{ticker}"
         metadata = []
+        
         for filing in filings:
             content_data = download_filing_content(filing)
             if content_data["content"]:
                 # Sanitize form type for file naming (e.g., 10-K/A -> 10-K_A)
                 form_type = sanitize_filename(filing["formType"])
                 file_name = f"{filing['accessionNo']}_{form_type}.html"
-                file_path = os.path.join(output_dir, file_name)
+                s3_key = f"{base_path}/{file_name}"
                 
-                # Write content to file
+                # Upload content to S3
                 try:
-                    with open(file_path, "w", encoding="utf-8") as f:
-                        f.write(content_data["content"])
-                    logger.info(f"Saved filing content to {file_path}")
+                    s3_path = upload_to_s3(content_data["content"], s3_key)
+                    logger.info(f"Saved filing content to {s3_path}")
                 except Exception as e:
-                    logger.error(f"Failed to write {file_path}: {str(e)}")
+                    logger.error(f"Failed to upload {s3_key}: {str(e)}")
                     continue
                 
                 # Store metadata
@@ -132,27 +150,30 @@ def save_filings(ticker: str, filings: list):
                     "filedAt": filing["filedAt"],
                     "accessionNo": filing["accessionNo"],
                     "url": filing["linkToFilingDetails"],
-                    "filePath": file_path
+                    "s3Path": f"s3://{BUCKET_NAME}/{s3_key}"
                 })
         
         if not metadata:
             logger.warning(f"No valid filings saved for {ticker}")
             return
         
-        # Save metadata
+        # Save metadata to S3
         metadata_df = pd.DataFrame(metadata)
-        metadata_path = os.path.join(output_dir, "metadata.csv")
-        metadata_df.to_csv(metadata_path, index=False)
-        logger.info(f"Saved metadata for {len(metadata)} filings to {metadata_path}")
+        csv_buffer = io.StringIO()
+        metadata_df.to_csv(csv_buffer, index=False)
+        metadata_key = f"{base_path}/metadata.csv"
+        
+        upload_to_s3(csv_buffer.getvalue(), metadata_key)
+        logger.info(f"Saved metadata for {len(metadata)} filings to s3://{BUCKET_NAME}/{metadata_key}")
     except Exception as e:
-        logger.error(f"Error saving filings for {ticker}: {str(e)}")
+        logger.error(f"Error saving filings for {ticker} to S3: {str(e)}")
         raise
 
 # Example usage
 if __name__ == "__main__":
-    ticker = ""
+    ticker = "WVE"
     try:
         filings = fetch_filings(ticker)
-        save_filings(ticker, filings)
+        save_filings_to_s3(ticker, filings)
     except Exception as e:
         logger.error(f"Pipeline failed for {ticker}: {str(e)}")
