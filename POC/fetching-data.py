@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # API keys and configuration
 SEC_API_KEY = os.getenv("SEC_API_KEY", "")  # Replace with your key
-USER_AGENT = "saisrunith saisrunith12@gmail.com"  # Required for SEC API compliance
+USER_AGENT = "saisrunith saisrunith54@gmail.com"  # Required for SEC API compliance
 query_api = QueryApi(api_key=SEC_API_KEY)
 render_api = RenderApi(api_key=SEC_API_KEY)
 

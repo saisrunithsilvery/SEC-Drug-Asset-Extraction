@@ -408,7 +408,28 @@ class AnalysisService:
             logger.error(f"Error consolidating data: {str(e)}")
             logger.error(f"Stack trace: {traceback.format_exc()}")
             raise
+    def df_to_markdown_with_delimiters(self,df):
+        
+        # Get column names and data
+        columns = df.columns.tolist()
+        data = df.values.tolist()
+        
+        # Create header row
+        markdown = "| " + " | ".join([str(col) for col in columns]) + " |\n"
+        
+        # Create separator row
+        markdown += "| " + " | ".join(["---" for _ in columns]) + " |\n"
+        
+        # Create data rows
+        for row in data:
+            # Convert all values to strings
+            row_str = [str(cell).replace('\n', ' ').replace('\r', '') for cell in row]
+            markdown += "| " + " | ".join(row_str) + " |\n"
     
+        with open('testing_ds.md', 'w') as f:
+            f.write(markdown)
+        return markdown
+       
     def save_output(self, drug_data: List[Dict[str, Any]]) -> Dict[str, str]:
         """
         Save drug data as CSV and Markdown with additional summaries to S3.
@@ -437,7 +458,8 @@ class AnalysisService:
             logger.info(f"Saved CSV to S3 for {self.ticker}")
             
             # Create Markdown content
-            markdown_table = tabulate(df, headers="keys", tablefmt="pipe", showindex=False)
+            # markdown_table = tabulate(df, headers="keys", tablefmt="pipe", showindex=False)
+            markdown_table = self.df_to_markdown_with_delimiters(df)
             markdown_content = f"# {self.ticker.upper()} Drug Asset Summary\n\n{markdown_table}\n\n"
             
             # Add additional sections

@@ -53,7 +53,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # API URL
-API_URL = "http://0.0.0.0:8000/api/v1/filings/pipeline"
+API_URL = "http://0.0.0.0:8005/api/v1/filings/pipeline"
 
 # Title
 st.title("Drug Asset Analysis Dashboard")
@@ -85,7 +85,26 @@ def normalize_json_fields(data, fields_to_normalize=['Animal Models/Preclinical 
                     # If parsing fails, keep as is
                     pass
     return data
-
+def df_to_markdown_with_delimiters(df):
+        
+        # Get column names and data
+        columns = df.columns.tolist()
+        data = df.values.tolist()
+        
+        # Create header row
+        markdown = "| " + " | ".join([str(col) for col in columns]) + " |\n"
+        
+        # Create separator row
+        markdown += "| " + " | ".join(["---" for _ in columns]) + " |\n"
+        
+        # Create data rows
+        for row in data:
+            # Convert all values to strings
+            row_str = [str(cell).replace('\n', ' ').replace('\r', '') for cell in row]
+            markdown += "| " + " | ".join(row_str) + " |\n"
+    
+        return markdown
+       
 # Function to fetch data from API
 def fetch_drug_data(ticker):
     """Fetch drug data from the API"""
@@ -172,11 +191,12 @@ if submitted:
             )
             
             # Create Markdown for download
-            from tabulate import tabulate
+            # from tabulate import tabulate
+            # md_content = f"# {ticker} Drug Asset Summary\n\n"
+            # md_content += tabulate(filtered_df, headers="keys", tablefmt="pipe", showindex=False)
+            # md_content += "\n\n"
             md_content = f"# {ticker} Drug Asset Summary\n\n"
-            md_content += tabulate(filtered_df, headers="keys", tablefmt="pipe", showindex=False)
-            md_content += "\n\n"
-            
+            md_content+=df_to_markdown_with_delimiters(filtered_df)
             # Add additional sections
             platforms = [d for d in filtered_df["Name/Number"] if "platform" in str(filtered_df.loc[filtered_df["Name/Number"] == d, "Mechanism of Action"].values[0]).lower()]
             if platforms:

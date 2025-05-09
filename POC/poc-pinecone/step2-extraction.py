@@ -166,7 +166,7 @@ class DrugIdentifierAgent:
             # Simplified and strict prompt
             prompt_template = ChatPromptTemplate.from_messages([
                 ("system", """
-                    You are an expert in biotech SEC filings. From the provided context, identify all drugs, programs, and platform technologies 
+                    You are an expert in biotech SEC filings. From the provided context, identify all drugs, drug programs, and platform technologies 
                     mentioned. Return a flat JSON list of unique names/identifiers (e.g., ["PE-1", "SM", "AA"]). 
                     - Include drug names/number.
                     - Include program names the company has developed.
@@ -175,7 +175,7 @@ class DrugIdentifierAgent:
                     - Ensure the output is valid JSON.
                     - If no assets are found, return an empty list [].
                 """),
-                ("human", "Context: {context}\nReturn a flat JSON list of all drug, program, and platform names.")
+                ("human", "Context: {context}\nReturn a flat JSON list of all drug,drug program, and platform names.")
             ])
 
             # Create RAG chain
