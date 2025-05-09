@@ -118,16 +118,31 @@ class AnalysisService:
             # Simplified and strict prompt
             prompt_template = ChatPromptTemplate.from_messages([
                 ("system", """
-                    You are an expert in biotech SEC filings. From the provided context, identify all drugs, programs, and platform technologies 
-                    mentioned. Return a flat JSON list of unique names/identifiers (e.g., ["PE-1", "SM", "AA"]). 
-                    - Include drug names/number.
-                    - Include program names the company has developed.
-                    - Do NOT include diseases names or indications.
-                    - Do NOT group by category.
-                    - Ensure the output is valid JSON.
-                    - If no assets are found, return an empty list [].
-                """),
-                ("human", "Context: {context}\nReturn a flat JSON list of all drug, program, and platform names.")
+You are an expert in biotech SEC filings analysis. From the provided context, identify all drugs, programs, and platform technologies mentioned. Be thorough and comprehensive in your search.
+
+Return a flat JSON list of unique names/identifiers using this format: ["Asset1", "Asset2", "Platform1"].
+
+Include:
+- Drug names and numbers (e.g., WVE-004, WVE-N531)
+- Program names (e.g., PRECISION-HD, PRISM, RNA editing program)
+- Platform technologies (e.g., PN backbone chemistry, GalNAc-AIMer)
+- Specific technologies mentioned as company assets (e.g., allele-selective targeting)
+
+Do NOT include:
+- Disease names or indications alone
+- General technical terms not specific to company programs
+- Target molecules (unless they are also program names)
+
+Ensure the output is valid JSON. If no assets are found, return an empty list [].
+When examining the context, look for patterns like:
+- Names followed by mechanism descriptions
+- Assets mentioned in clinical trial updates
+- Program/platform names in technology sections
+
+Be thorough and pick up all potential assets across the entire context.
+"""),
+
+("human", "Context: {context}\nReturn a flat JSON list of all drug, program, and platform names.")
             ])
             
             # Create RAG chain
@@ -138,7 +153,7 @@ class AnalysisService:
             qa_chain = RetrievalQA.from_chain_type(
                 llm=llm,
                 chain_type="stuff",
-                retriever=self.vector_store.as_retriever(search_kwargs={"k": 10}),
+                retriever=self.vector_store.as_retriever(search_kwargs={"k": 12}),
                 chain_type_kwargs={"prompt": prompt_template}
             )
             
@@ -225,28 +240,56 @@ class AnalysisService:
             # Enhanced prompt with properly escaped JSON keys
             prompt_template = ChatPromptTemplate.from_messages([
                 ("system", """
-                    You are an expert in biotech SEC filings. Extract detailed information for the specified drug, program, or platform 
-                    from the provided context. SEC filings may not use terms like 'Mechanism of Action' or 'Indication' directly, so infer 
-                    these from descriptions, technical details, or context. Provide:
-                    - Name/Number: Use the provided asset name (compulsory).
-                    - Mechanism of Action: How the drug/program works (e.g., 'promotes exon skipping' or 'RNA editing'). Look for terms like 
-                      'therapeutic approach,' 'targets,' or functional descriptions. Default to 'Not specified' if unclear.
-                    - Target(s): Biological molecule/pathway (e.g., 'dystrophin pre-mRNA'). Look for mentions of genes, proteins, or pathways. 
-                      Default to 'Not specified' if unclear.
-                    - Indication: Target disease (e.g., 'Duchenne Muscular Dystrophy'). Look for disease names or treatment goals. Default to 
-                      'Not specified' if unclear.
-                    - Animal Models/Preclinical Data: Bullet points summarizing experiments (model type, results, year/reference). Look for 
-                      animal studies or lab results. Default to 'Not specified' if missing.
-                    - Clinical Trials: Bullet points with phase, N, duration, results, adverse events (AEs), and dates. Look for trial updates or 
-                      clinical study mentions. Default to 'Not specified' if missing.
-                    - Upcoming Milestones: Expected or Future catalysts/events that is planned or mentioned. Look for future plans or timelines from the last updated file. 
-                      Default to 'Not specified' if missing.
-                    - References: Filing accession number, form type (e.g., 10-K), and filed date from metadata. Default to 'Not specified' if missing.
-                    Merge data from multiple chunks if applicable. Return a JSON dictionary.
+                    You are an expert in biotech SEC filings. Extract comprehensive details for the specified asset (drug, program, or platform) 
+                    from the provided context. Use ALL relevant information from the context to fill in as many fields as possible.
                     
-                    IMPORTANT: The response must be formatted as a valid JSON object. Return only a single plain JSON object.
+                    Extract and infer the following information (be thorough and detailed):
+                    
+                    1. Name/Number: Use the exact asset name provided (required)
+                    
+                    2. Mechanism of Action: How the drug/program works at the molecular or cellular level.
+                       - Look for terms like: 'silencing,' 'promotes,' 'inhibits,' 'targets,' 'modulates,' etc.
+                       - Examples: "Allele-selective silencing of mutant HTT transcript", "RNA editing using ADAR enzymes"
+                       - Include the molecular approach (antisense oligo, RNAi, small molecule, etc.)
+                    
+                    3. Target(s): Specific biological molecules or pathways the asset acts upon.
+                       - Look for gene names, protein targets, or pathways
+                       - Examples: "C9orf72 gene transcripts", "INHBE mRNA", "SNP3 in Huntingtin gene"
+                       - Include specific variants if mentioned (SNPs, mutations)
+                    
+                    4. Indication: Disease(s) or condition(s) the asset is being developed to treat.
+                       - Examples: "Huntington's Disease", "ALS and frontotemporal dementia", "Obesity"
+                       - Include multiple indications if applicable
+                    
+                    5. Animal Models/Preclinical Data: Detailed summary of experimental results.
+                       - Format as list of studies with model type, key results, and year/reference
+                       - Examples: "Young diet-induced obesity (DIO) mice: 16'%' lower body weight after five weeks"
+                       - Include quantitative results whenever possible ('%' reduction, p-values, etc.)
+                    
+                    6. Clinical Trials: All available clinical trial information.
+                       - Format as list with phase, patient numbers (N), duration, key results, adverse events, dates
+                       - Examples: "Phase 1b/2a: Observed reduction in CSF mHTT protein of up to 35 at 85 days post-single dose"
+                       - Include all phases if the asset has multiple trials
+                    
+                    7. Upcoming Milestones: Future events or data releases mentioned.
+                       - Format as list of expected events with approximate timing
+                       - Examples: "Initiation of clinical trial in Q1 2025", "48-week data expected in Q1 2025"
+                       - Prioritize specific timeframes over general statements
+                    
+                    8. References: Sources of the information.
+                       - Include filing accession numbers, form types (10-K, 8-K), and filing dates
+                       - Examples: "0000950170-24-026876, Form 10-K, Filed Date: 2024-01-01"
+                    
+                    IMPORTANT GUIDELINES:
+                    - Extract ALL available information from the context for each field
+                    - For fields without explicit information, make reasonable inferences from the context
+                    - Only use "Not specified" when absolutely no information or inference is possible
+                    - If information appears contradictory, include all versions with sources
+                    - Format the response as a clean, valid JSON object
+                    - Include quantitative data whenever possible (percentages, patient numbers, dates)
+                    - Be comprehensive and detailed in your extraction
                 """),
-                ("human", "Context: {context}\nExtract details for asset: {asset}")
+                ("human", "Context: {context}\nExtract comprehensive details for asset: {asset}")
             ])
             
             # Create RAG chain with custom input mapping
@@ -256,7 +299,7 @@ class AnalysisService:
             )
             
             # Reduce k to avoid context length issues
-            retriever = self.vector_store.as_retriever(search_kwargs={"k": 10})
+            retriever = self.vector_store.as_retriever(search_kwargs={"k": 13})
             chain = (
                 {"context": retriever, "asset": RunnablePassthrough()}
                 | prompt_template
