@@ -1,6 +1,8 @@
-# SEC Filing Analysis Backend
+# SEC Filing Analysis
 
-This FastAPI backend provides a comprehensive solution for fetching, processing, and analyzing SEC filings, with a specific focus on extracting drug asset information for biotech companies.
+This provides a comprehensive solution for fetching, processing, and analyzing SEC filings, with a specific focus on extracting drug asset information for biotech companies.
+
+#code labs link - https://codelabs-preview.appspot.com/?file_id=1J2qgr5sLVbDpQWztI2nhbNEzX7CLqYung32U6MnvQDk#0
 
 ## Features
 
