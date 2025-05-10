@@ -469,8 +469,6 @@ Be thorough and pick up all potential assets across the entire context.
             row_str = [str(cell).replace('\n', ' ').replace('\r', '') for cell in row]
             markdown += "| " + " | ".join(row_str) + " |\n"
     
-        with open('testing_ds.md', 'w') as f:
-            f.write(markdown)
         return markdown
        
     def save_output(self, drug_data: List[Dict[str, Any]]) -> Dict[str, str]:

@@ -1,0 +1,47 @@
+version: '3'
+
+services:
+  # Backend API service
+  backend:
+    build:
+      context: ./sec-api-backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./sec-api-backend:/app
+    environment:
+      - ENVIRONMENT=development
+      - BUCKET_NAME=${BUCKET_NAME}
+      - EMBEDDINGS_MODEL=all-MiniLM-L6-v2
+      - TEMP_DIR=/tmp
+      - LOG_FILE=sec_pipeline.log
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SEC_API_KEY=${SEC_API_KEY}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_REGION=us-east-1
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Streamlit frontend service
+  streamlit:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./client:/app
+    depends_on:
+      - backend
+    environment:
+      - BACKEND_URL=http://backend:8000
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

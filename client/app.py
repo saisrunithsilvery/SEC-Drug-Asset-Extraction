@@ -4,10 +4,15 @@ import requests
 import json
 import base64
 from io import StringIO
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Set page config
 st.set_page_config(
-    page_title="SEC Drug Asset Visualization",
+    page_title="K-Cap Funding SEC Drug Asset Visualization",
     page_icon="💊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -53,7 +58,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # API URL
-API_URL = "http://0.0.0.0:8005/api/v1/filings/pipeline"
+API_URL = f"{os.environ.get('BACKEND_URL', 'http://localhost:8000')}/api/v1/filings/pipeline"
 
 # Title
 st.title("Drug Asset Analysis Dashboard")
