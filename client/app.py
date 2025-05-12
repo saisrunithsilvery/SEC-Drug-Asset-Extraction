@@ -60,6 +60,18 @@ st.markdown("""
 # API URL
 API_URL = f"{os.environ.get('BACKEND_URL', 'http://localhost:8000')}/api/v1/filings/pipeline"
 
+# Initialize session state for storing data between reruns
+if 'data' not in st.session_state:
+    st.session_state.data = None
+if 'df' not in st.session_state:
+    st.session_state.df = None
+if 'filtered_df' not in st.session_state:
+    st.session_state.filtered_df = None
+if 'ticker' not in st.session_state:
+    st.session_state.ticker = ""
+if 'has_run' not in st.session_state:
+    st.session_state.has_run = False
+
 # Title
 st.title("Drug Asset Analysis Dashboard")
 st.markdown("Analyze SEC filings to extract drug, program, and platform information")
@@ -80,7 +92,7 @@ def normalize_json_fields(data, fields_to_normalize=['Animal Models/Preclinical 
     """Normalize JSON string fields for better display"""
     for asset in data.get('assets', []):
         for field in fields_to_normalize:
-            if field in asset and asset[field].startswith('{') or asset[field].startswith('['):
+            if field in asset and isinstance(asset[field], str) and (asset[field].startswith('{') or asset[field].startswith('[')):
                 try:
                     # Try to parse the JSON
                     parsed = json.loads(asset[field])
@@ -90,27 +102,28 @@ def normalize_json_fields(data, fields_to_normalize=['Animal Models/Preclinical 
                     # If parsing fails, keep as is
                     pass
     return data
+
 def df_to_markdown_with_delimiters(df):
-        
-        # Get column names and data
-        columns = df.columns.tolist()
-        data = df.values.tolist()
-        
-        # Create header row
-        markdown = "| " + " | ".join([str(col) for col in columns]) + " |\n"
-        
-        # Create separator row
-        markdown += "| " + " | ".join(["---" for _ in columns]) + " |\n"
-        
-        # Create data rows
-        for row in data:
-            # Convert all values to strings
-            row_str = [str(cell).replace('\n', ' ').replace('\r', '') for cell in row]
-            markdown += "| " + " | ".join(row_str) + " |\n"
+    # Get column names and data
+    columns = df.columns.tolist()
+    data = df.values.tolist()
     
-        return markdown
-       
-# Function to fetch data from API
+    # Create header row
+    markdown = "| " + " | ".join([str(col) for col in columns]) + " |\n"
+    
+    # Create separator row
+    markdown += "| " + " | ".join(["---" for _ in columns]) + " |\n"
+    
+    # Create data rows
+    for row in data:
+        # Convert all values to strings
+        row_str = [str(cell).replace('\n', ' ').replace('\r', '') for cell in row]
+        markdown += "| " + " | ".join(row_str) + " |\n"
+
+    return markdown
+
+# Function to fetch data from API - cached to avoid repeated API calls
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def fetch_drug_data(ticker):
     """Fetch drug data from the API"""
     try:
@@ -132,29 +145,21 @@ def fetch_drug_data(ticker):
         st.error(f"Error connecting to API: {str(e)}")
         return None
 
-# Sidebar for user input
-with st.sidebar:
-    st.header("Search Parameters")
-    ticker = st.text_input("Enter Ticker Symbol", "WVE").upper()
+# Function to handle the submit button click
+def handle_submit():
+    st.session_state.has_run = True
+    ticker = st.session_state.ticker_input
+    st.session_state.ticker = ticker
     
-    st.subheader("Filtering Options")
-    st.markdown("Filter options will appear after data is loaded")
-    
-    submitted = st.button("Analyze SEC Filings", type="primary")
-
-# Main content area
-if submitted:
     # Show loading spinner
     with st.spinner(f"Analyzing SEC filings for {ticker}..."):
         # Fetch data
-        data = fetch_drug_data(ticker)
-        
+        st.session_state.data = fetch_drug_data(ticker)
+    
     # If data is loaded successfully
-    if data:
-        st.success(f"Successfully retrieved data for {ticker}")
-        
+    if st.session_state.data:
         # Create a DataFrame from the assets
-        df = pd.DataFrame(data.get('assets', []))
+        st.session_state.df = pd.DataFrame(st.session_state.data.get('assets', []))
         
         # Rename columns for display
         column_mapping = {
@@ -167,113 +172,143 @@ if submitted:
             "Upcoming Milestones": "Upcoming Milestones",
             "References": "References"
         }
-        df = df.rename(columns=column_mapping)
+        st.session_state.df = st.session_state.df.rename(columns=column_mapping)
         
-        # Add filtering options to sidebar now that we have data
-        with st.sidebar:
-            st.subheader("Filter Data")
-            
-            # Get unique values for filtering
-            indications = ['All'] + sorted(df['Indication'].unique().tolist())
-            selected_indication = st.selectbox("Filter by Indication", indications)
-            
-            # Apply filters
-            filtered_df = df.copy()
-            if selected_indication != 'All':
-                filtered_df = filtered_df[filtered_df['Indication'] == selected_indication]
-            
-            # Show asset count
-            st.metric("Total Assets", len(filtered_df))
-            
-            # Download options
-            st.subheader("Download Options")
-            
+        # Set the filtered dataframe to be the same as the main dataframe initially
+        st.session_state.filtered_df = st.session_state.df.copy()
+
+# Function to handle indication filter change
+def filter_by_indication():
+    selected_indication = st.session_state.selected_indication
+    
+    if selected_indication == 'All':
+        st.session_state.filtered_df = st.session_state.df.copy()
+    else:
+        st.session_state.filtered_df = st.session_state.df[st.session_state.df['Indication'] == selected_indication]
+
+# Sidebar for user input
+with st.sidebar:
+    st.header("Search Parameters")
+    ticker_input = st.text_input("Enter Ticker Symbol", value=st.session_state.ticker if st.session_state.ticker else "WVE", key="ticker_input").upper()
+    
+    st.subheader("Filtering Options")
+    
+    # Only show filters if data is loaded
+    if st.session_state.df is not None:
+        # Get unique values for filtering
+        indications = ['All'] + sorted(st.session_state.df['Indication'].unique().tolist())
+        
+        # Create the selectbox with a key and on_change callback
+        st.selectbox(
+            "Filter by Indication", 
+            indications, 
+            key="selected_indication",
+            on_change=filter_by_indication,
+            index=0
+        )
+        
+        # Show asset count
+        if st.session_state.filtered_df is not None:
+            st.metric("Total Assets", len(st.session_state.filtered_df))
+        
+        # Download options
+        st.subheader("Download Options")
+        
+        if st.session_state.filtered_df is not None:
             # Create CSV for download
-            csv = filtered_df.to_csv(index=False)
+            csv = st.session_state.filtered_df.to_csv(index=False)
             st.markdown(
-                get_download_link(csv, f"{ticker}_drug_assets.csv", "Download CSV"),
+                get_download_link(csv, f"{st.session_state.ticker}_drug_assets.csv", "Download CSV"),
                 unsafe_allow_html=True
             )
             
             # Create Markdown for download
-            # from tabulate import tabulate
-            # md_content = f"# {ticker} Drug Asset Summary\n\n"
-            # md_content += tabulate(filtered_df, headers="keys", tablefmt="pipe", showindex=False)
-            # md_content += "\n\n"
-            md_content = f"# {ticker} Drug Asset Summary\n\n"
-            md_content+=df_to_markdown_with_delimiters(filtered_df)
+            md_content = f"# {st.session_state.ticker} Drug Asset Summary\n\n"
+            md_content += df_to_markdown_with_delimiters(st.session_state.filtered_df)
+            
             # Add additional sections
-            platforms = [d for d in filtered_df["Name/Number"] if "platform" in str(filtered_df.loc[filtered_df["Name/Number"] == d, "Mechanism of Action"].values[0]).lower()]
-            if platforms:
-                md_content += "**Platform Technologies:**\n"
-                md_content += "\n".join([f"- {plat}" for plat in platforms]) + "\n\n"
+            filtered_df = st.session_state.filtered_df
+            try:
+                platforms = [d for d in filtered_df["Name/Number"] if "platform" in str(filtered_df.loc[filtered_df["Name/Number"] == d, "Mechanism of Action"].values[0]).lower()]
+                if platforms:
+                    md_content += "**Platform Technologies:**\n"
+                    md_content += "\n".join([f"- {plat}" for plat in platforms]) + "\n\n"
+            except:
+                pass
             
             # Add disclaimer
             md_content += "*Note: Data extracted from SEC filings. May be incomplete due to limitations in filings or processing.*"
             
             st.markdown(
-                get_download_link(md_content, f"{ticker}_drug_assets.md", "Download Markdown"),
+                get_download_link(md_content, f"{st.session_state.ticker}_drug_assets.md", "Download Markdown"),
                 unsafe_allow_html=True
             )
+    else:
+        st.markdown("Filter options will appear after data is loaded")
+    
+    submitted = st.button("Analyze SEC Filings", type="primary", on_click=handle_submit)
+
+# Main content area
+if st.session_state.has_run and st.session_state.data:
+    st.success(f"Successfully retrieved data for {st.session_state.ticker}")
+    
+    # Display the table in a clean format
+    st.subheader(f"{st.session_state.ticker} Drug Asset Summary")
+    
+    # Create tabs for different views
+    tab1, tab2 = st.tabs(["Standard View", "Expanded View"])
+    
+    with tab1:
+        # Standard view with limited columns
+        display_columns = ["Name/Number", "Mechanism of Action", "Target(s)", "Indication", "Clinical Trials", "Upcoming Milestones"]
+        available_columns = [col for col in display_columns if col in st.session_state.filtered_df.columns]
+        st.dataframe(st.session_state.filtered_df[available_columns], use_container_width=True, height=500)
+    
+    with tab2:
+        # Expanded view with all columns
+        st.dataframe(st.session_state.filtered_df, use_container_width=True, height=600)
+    
+    # Display additional analyses
+    st.subheader("Asset Analysis")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Count by indication
+        st.subheader("Assets by Indication")
+        indication_counts = st.session_state.df['Indication'].value_counts()
+        st.bar_chart(indication_counts)
+    
+    with col2:
+        # Clinical trial phases distribution
+        st.subheader("Clinical Trial Phases")
         
-        # Display the table in a clean format
-        st.subheader(f"{ticker} Drug Asset Summary")
-        
-        # Create tabs for different views
-        tab1, tab2 = st.tabs(["Standard View", "Expanded View"])
-        
-        with tab1:
-            # Standard view with limited columns
-            display_columns = ["Name/Number", "Mechanism of Action", "Target(s)", "Indication", "Clinical Trials", "Upcoming Milestones"]
-            st.dataframe(filtered_df[display_columns], use_container_width=True, height=500)
-        
-        with tab2:
-            # Expanded view with all columns
-            st.dataframe(filtered_df, use_container_width=True, height=600)
-        
-        # Display additional analyses
-        st.subheader("Asset Analysis")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Count by indication
-            st.subheader("Assets by Indication")
-            indication_counts = df['Indication'].value_counts()
-            st.bar_chart(indication_counts)
-        
-        with col2:
-            # Clinical trial phases distribution
-            st.subheader("Clinical Trial Phases")
-            
-            # Extract phases from Clinical Trials field (this is simplified)
+        # Extract phases from Clinical Trials field (this is simplified)
+        if 'Clinical Trials' in st.session_state.df.columns:
             phases = []
-            for trial_info in df['Clinical Trials']:
-                if 'Phase 1' in trial_info:
+            for trial_info in st.session_state.df['Clinical Trials']:
+                if 'Phase 1' in str(trial_info):
                     phases.append('Phase 1')
-                elif 'Phase 2' in trial_info:
+                elif 'Phase 2' in str(trial_info):
                     phases.append('Phase 2')
-                elif 'Phase 3' in trial_info:
+                elif 'Phase 3' in str(trial_info):
                     phases.append('Phase 3')
-                elif 'Phase' in trial_info:
+                elif 'Phase' in str(trial_info):
                     phases.append('Other Phase')
                 else:
                     phases.append('Not Specified')
             
             phase_counts = pd.Series(phases).value_counts()
             st.bar_chart(phase_counts)
-        
-        # Display S3 paths if available
-        if 's3_paths' in data:
-            st.subheader("S3 Storage Locations")
-            for file_type, path in data['s3_paths'].items():
-                st.code(f"{file_type.upper()}: {path}")
     
-    else:
-        st.error(f"Failed to retrieve data for ticker {ticker}. Please check if the API is running and the ticker symbol is valid.")
+    # Display S3 paths if available
+    if 's3_paths' in st.session_state.data:
+        st.subheader("S3 Storage Locations")
+        for file_type, path in st.session_state.data['s3_paths'].items():
+            st.code(f"{file_type.upper()}: {path}")
 
 # Initial state - before search
-else:
+elif not st.session_state.has_run:
     st.info("Enter a ticker symbol in the sidebar and click 'Analyze SEC Filings' to start.")
     
     # Show example of what the output will look like
