@@ -27,6 +27,12 @@ The SEC Drug Asset Extraction Pipeline is an intelligent data processing system 
 
 
 ## Architecture
+![image](https://github.com/user-attachments/assets/c7a9b65a-a64f-482c-bf9e-dc3825783bb2)
+
+##Workflow 
+![Editor _ Mermaid Chart-2025-05-13-214241](https://github.com/user-attachments/assets/3670c322-db64-4ab3-8620-33db0ee7fb42)
+
+
 
 The pipeline consists of the following key components:
 
