@@ -4,6 +4,8 @@ The SEC Drug Asset Extraction Pipeline is an intelligent data processing system 
 
 #code labs link - https://codelabs-preview.appspot.com/?file_id=1J2qgr5sLVbDpQWztI2nhbNEzX7CLqYung32U6MnvQDk#0
 
+#Video Link:https://youtu.be/_CEpZIMwW28
+
 # SEC Drug Asset Extraction Pipeline
 
 
@@ -31,6 +33,7 @@ The SEC Drug Asset Extraction Pipeline is an intelligent data processing system 
 
 ##Workflow 
 ![Editor _ Mermaid Chart-2025-05-13-214241](https://github.com/user-attachments/assets/3670c322-db64-4ab3-8620-33db0ee7fb42)
+
 
 
 
