@@ -118,47 +118,46 @@ class AnalysisService:
             # Simplified and strict prompt
             prompt_template = ChatPromptTemplate.from_messages([
                 ("system", """
-You are an expert in biotech SEC filings analysis. From the provided context, identify all drugs, programs, and platform technologies mentioned. Be thorough and comprehensive in your search.
+        You are an expert in biotech SEC filings analysis. From the provided context, identify all drugs the company is developing. Be thorough and comprehensive in your search.
 
-Return a flat JSON list of unique names/identifiers using this format: ["Asset1", "Asset2", "Platform1"].
+        Return a flat JSON list of unique drug names/identifiers using this format: ["Drug1", "Drug2"].
 
-Include:
-- Drug names and numbers (e.g., WVE-004, WVE-N531)
-- Program names (e.g., PRECISION-HD, PRISM, RNA editing program)
-- Platform technologies (e.g., PN backbone chemistry, GalNAc-AIMer)
-- Specific technologies mentioned as company assets (e.g., allele-selective targeting)
+        Include:
+        - Drug names and numbers (e.g., WVE-4, WVE-N531)
 
-Do NOT include:
-- Disease names or indications alone
-- General technical terms not specific to company programs
-- Target molecules (unless they are also program names)
+        Do NOT include:
+        - Program names (e.g., PRECISION-HD, PRISM, RNA editing program)
+        - Platform technologies (e.g., PN backbone chemistry, GalNAc-AIMer)
+        - Specific technologies mentioned as company assets (e.g., allele-selective targeting)
+        - Disease names or indications alone
+        - General technical terms not specific to company programs
+        - Target molecules (unless they are also program names)
 
-Ensure the output is valid JSON. If no assets are found, return an empty list [].
-When examining the context, look for patterns like:
-- Names followed by mechanism descriptions
-- Assets mentioned in clinical trial updates
-- Program/platform names in technology sections
+        Ensure the output is valid JSON. If no assets are found, return an empty list [].
+        When examining the context, look for patterns like:
+        - Names followed by mechanism descriptions
+        - Assets mentioned in clinical trial updates
 
-Be thorough and pick up all potential assets across the entire context.
-"""),
+        Be thorough and pick up all potential assets across the entire context.
+        """),
 
-("human", "Context: {context}\nReturn a flat JSON list of all drug, program, and platform names.")
+                ("human", "Context: {context}\nReturn a flat JSON list of all drug names.")
             ])
             
             # Create RAG chain
             llm = ChatOpenAI(
-                model_name="gpt-3.5-turbo",
+                model_name="gpt-4.1-mini",
                 openai_api_key=OPENAI_API_KEY
             )
             qa_chain = RetrievalQA.from_chain_type(
                 llm=llm,
                 chain_type="stuff",
-                retriever=self.vector_store.as_retriever(search_kwargs={"k": 12}),
+                retriever=self.vector_store.as_retriever(search_kwargs={"k": 40}),
                 chain_type_kwargs={"prompt": prompt_template}
             )
             
             # Run query
-            query = f"Identify all drug, program, and platform names for {self.ticker}"
+            query = f"Identify all drug names for {self.ticker}"
             response = qa_chain.invoke({"query": query})
             raw_result = response.get("result", "[]")
             
@@ -192,163 +191,525 @@ Be thorough and pick up all potential assets across the entire context.
             logger.error(f"Error identifying assets for {self.ticker}: {str(e)}")
             raise
     
-    def _normalize_complex_value(self, value: Any) -> str:
+    def _normalize_complex_value(self, value: Any) -> Any:
         """
-        Convert complex data types (lists, dicts) to formatted strings.
+        Process complex data types to ensure they match the expected structured format.
         
         Args:
             value: Value to normalize
             
         Returns:
-            Normalized string value
+            Properly structured value (may be a complex object, not just a string)
         """
         if value is None:
             return "Not specified"
         
         if isinstance(value, str):
+            # If the value is a string but should be a complex structure, try to parse it
+            if value != "Not specified":
+                try:
+                    # If it looks like JSON, try to parse it
+                    if (value.strip().startswith('[') and value.strip().endswith(']')) or \
+                       (value.strip().startswith('{') and value.strip().endswith('}')):
+                        parsed = json.loads(value)
+                        return parsed
+                except json.JSONDecodeError:
+                    # If parsing fails, return the original string
+                    return value
             return value
         
-        # Convert complex objects to formatted strings
-        try:
-            if isinstance(value, (dict, list)):
-                # For pretty formatting, use indent
-                return json.dumps(value, indent=2)
-            else:
-                return str(value)
-        except Exception as e:
-            logger.warning(f"Error formatting complex value: {str(e)}")
-            # Return a simple string representation as fallback
-            return str(value)
+        # Keep complex objects as-is
+        if isinstance(value, (dict, list)):
+            return value
+        
+        # Convert other types to string
+        return str(value)
     
     def extract_asset_details(self, asset: str) -> Optional[Dict[str, Any]]:
         """
         Extract detailed information for a specific drug/program.
-        
+
         Args:
             asset: Asset name or identifier
-            
+
         Returns:
             Dictionary of asset details
         """
         try:
             if not self.vector_store:
                 self._load_vector_store()
-            
+
             # Validate OpenAI API key
             self._validate_api_key()
+
+            # IMPORTANT: The original approach using LangChain chains and retrievers has an issue
+            # The error is: 'dict' object has no attribute 'replace' when trying to invoke the chain
+            # This happens because we're passing an empty dictionary as input
+            # Let's use a more direct approach that avoids this issue
+
+            # We'll use the vector store directly to get relevant document chunks
+            logger.info(f"Fetching relevant documents for {asset} from vector store")
+            docs = self.vector_store.similarity_search(asset, k=40)
             
-            # Enhanced prompt with properly escaped JSON keys
-            prompt_template = ChatPromptTemplate.from_messages([
-                ("system", """
-                    You are an expert in biotech SEC filings. Extract comprehensive details for the specified asset (drug, program, or platform) 
-                    from the provided context. Use ALL relevant information from the context to fill in as many fields as possible.
-                    
-                    Extract and infer the following information (be thorough and detailed):
-                    
-                    1. Name/Number: Use the exact asset name provided (required)
-                    
-                    2. Mechanism of Action: How the drug/program works at the molecular or cellular level.
-                       - Look for terms like: 'silencing,' 'promotes,' 'inhibits,' 'targets,' 'modulates,' etc.
-                       - Examples: "Allele-selective silencing of mutant HTT transcript", "RNA editing using ADAR enzymes"
-                       - Include the molecular approach (antisense oligo, RNAi, small molecule, etc.)
-                    
-                    3. Target(s): Specific biological molecules or pathways the asset acts upon.
-                       - Look for gene names, protein targets, or pathways
-                       - Examples: "C9orf72 gene transcripts", "INHBE mRNA", "SNP3 in Huntingtin gene"
-                       - Include specific variants if mentioned (SNPs, mutations)
-                    
-                    4. Indication: Disease(s) or condition(s) the asset is being developed to treat.
-                       - Examples: "Huntington's Disease", "ALS and frontotemporal dementia", "Obesity"
-                       - Include multiple indications if applicable
-                    
-                    5. Animal Models/Preclinical Data: Detailed summary of experimental results.
-                       - Format as list of studies with model type, key results, and year/reference
-                       - Examples: "Young diet-induced obesity (DIO) mice: 16'%' lower body weight after five weeks"
-                       - Include quantitative results whenever possible ('%' reduction, p-values, etc.)
-                    
-                    6. Clinical Trials: All available clinical trial information.
-                       - Format as list with phase, patient numbers (N), duration, key results, adverse events, dates
-                       - Examples: "Phase 1b/2a: Observed reduction in CSF mHTT protein of up to 35 at 85 days post-single dose"
-                       - Include all phases if the asset has multiple trials
-                    
-                    7. Upcoming Milestones: Future events or data releases mentioned.
-                       - Format as list of expected events with approximate timing
-                       - Examples: "Initiation of clinical trial in Q1 2025", "48-week data expected in Q1 2025"
-                       - Prioritize specific timeframes over general statements
-                    
-                    8. References: Sources of the information.
-                       - Include filing accession numbers, form types (10-K, 8-K), and filing dates
-                       - Examples: "0000950170-24-026876, Form 10-K, Filed Date: 2024-01-01"
-                    
-                    IMPORTANT GUIDELINES:
-                    - Extract ALL available information from the context for each field
-                    - For fields without explicit information, make reasonable inferences from the context
-                    - Only use "Not specified" when absolutely no information or inference is possible
-                    - If information appears contradictory, include all versions with sources
-                    - Format the response as a clean, valid JSON object
-                    - Include quantitative data whenever possible (percentages, patient numbers, dates)
-                    - Be comprehensive and detailed in your extraction
-                """),
-                ("human", "Context: {context}\nExtract comprehensive details for asset: {asset}")
-            ])
+            # Combine the document chunks into a context
+            context = "\n\n".join([doc.page_content for doc in docs])
+            logger.info(f"Retrieved {len(docs)} document chunks for context")
             
-            # Create RAG chain with custom input mapping
-            llm = ChatOpenAI(
-                model_name="gpt-3.5-turbo",
+            # Create a system prompt that doesn't use any 'Model' or 'Phase' words that could
+            # be confused as template variables
+            system_prompt = (
+                "You are an expert in biotech SEC filings and drug development. "
+                "Extract all available information about the specified drug from the provided context. "
+                f"I need details about: {asset}\n\n"
+                "Format your response as a JSON object with these exact fields:\n"
+                "{\n"
+                '  "Name/Number": "The drug identifier",\n'
+                '  "Mechanism_of_Action": "How the drug works only the ans like antisense oligonucleotide (ASO) ",\n'
+                '  "Target": "The biological target",\n'
+                '  "Indication": "The disease being treated",\n'
+                '  "Animal_Models_Preclinical_Data": [\n'
+                '    {\n'
+                '      "Model": "The animal model used",\n'
+                '      "Key Results": "Main findings",\n'
+                '      "Year": "When conducted"\n'
+                '    }\n'
+                '  ],\n'
+                '  "Clinical_Trials": [\n'
+                '    {\n'
+                '      "Phase": "Trial phase",\n'
+                '      "N": "Number of patients",\n'
+                '      "Duration": "Trial duration",\n'
+                '      "Results": {\n'
+                '        "Safety": "Safety data",\n'
+                '        "Efficacy": "Efficacy data"\n'
+                '      },\n'
+                '      "Dates": "When conducted"\n'
+                '    }\n'
+                '  ],\n'
+                '  "Upcoming_Milestones": ["Future event 1", "Future event 2"],\n'
+                '  "References": ["Reference 1", "Reference 2"]\n'
+                '}\n\n'
+                "If information is unavailable for a field, use \"Not specified\" for text fields "
+                "or provide empty arrays with default placeholder items for the array fields. "
+                "Be thorough - include all information from the context about this drug."
+            )
+
+            # Call OpenAI directly rather than using LangChain chains
+            logger.info(f"Calling OpenAI to extract details for {asset}")
+            openai_client = ChatOpenAI(
+                model_name="gpt-4.1-mini",
                 openai_api_key=OPENAI_API_KEY
             )
-            
-            # Reduce k to avoid context length issues
-            retriever = self.vector_store.as_retriever(search_kwargs={"k": 13})
-            chain = (
-                {"context": retriever, "asset": RunnablePassthrough()}
-                | prompt_template
-                | llm
-                | {"result": lambda x: x.content}
-            )
-            
-            # Run query
-            raw_result = chain.invoke(asset).get("result", "")
-            raw_result = raw_result.strip()
-            
-            # Log raw result for debugging
-            logger.info(f"Raw result for {asset}: {raw_result[:200]}...")
-            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Context: {context}\n\nDrug to extract details for: {asset}"}
+            ]
+            response = openai_client.invoke(messages)
+            raw_result = response.content
+            logger.info(f"Received response from OpenAI for {asset}")
+
             # Clean and parse JSON
             raw_result = self._clean_json_response(raw_result)
-            
+            logger.info(f"Cleaned JSON response for {asset}")
+
             try:
                 details = json.loads(raw_result.strip())
+                
                 # Ensure Name/Number is consistent
                 if details.get("Name/Number") != asset and asset != "":
                     logger.warning(f"Name mismatch: Asset={asset}, Returned Name={details.get('Name/Number')}")
                     details["Name/Number"] = asset
-                
-                # Normalize complex values to strings
-                for key in details.keys():
-                    if not isinstance(details[key], str):
-                        details[key] = self._normalize_complex_value(details[key])
-                
-                logger.info(f"Extracted details for {asset} in {self.ticker}")
+
+                # Ensure all fields have proper structure
+                logger.info(f"Normalizing field structures for {asset}")
+                self._ensure_proper_field_structure(details)
+
+                logger.info(f"Successfully extracted details for {asset}")
                 return details
             except json.JSONDecodeError as e:
                 logger.error(f"JSON parsing error for {asset}: {str(e)}")
                 logger.error(f"Problematic JSON: {raw_result}")
-                
-                # Try to salvage by creating a minimal valid record
-                return {
-                    "Name/Number": asset,
-                    "Mechanism of Action": "Not specified",
-                    "Target(s)": "Not specified", 
-                    "Indication": "Not specified",
-                    "Animal Models/Preclinical Data": "Not specified",
-                    "Clinical Trials": "Not specified",
-                    "Upcoming Milestones": "Not specified",
-                    "References": "JSON parsing error"
-                }
+
+                # Return a fallback object
+                return self._create_fallback_details(asset)
         except Exception as e:
             logger.error(f"Error extracting details for {asset} in {self.ticker}: {str(e)}")
-            return None
+            import traceback
+            logger.error(f"Detailed traceback: {traceback.format_exc()}")
+            return self._create_fallback_details(asset)
+
+    def _ensure_proper_field_structure(self, details: Dict[str, Any]) -> None:
+        """
+        Ensures all fields have the expected structure.
+        
+        Args:
+            details: The details dictionary to normalize
+        """
+        # Ensure basic fields exist
+        for field in ["Name/Number", "Mechanism_of_Action", "Target", "Indication"]:
+            if field not in details or not details[field]:
+                details[field] = "Not specified"
+        
+        # Normalize Animal_Models_Preclinical_Data
+        if "Animal_Models_Preclinical_Data" not in details or not details["Animal_Models_Preclinical_Data"]:
+            details["Animal_Models_Preclinical_Data"] = [
+                {
+                    "Model": "Not specified",
+                    "Key Results": "Not specified",
+                    "Year": "Not specified"
+                }
+            ]
+        elif not isinstance(details["Animal_Models_Preclinical_Data"], list):
+            # Try to parse if it's a string
+            try:
+                if isinstance(details["Animal_Models_Preclinical_Data"], str):
+                    parsed = json.loads(details["Animal_Models_Preclinical_Data"])
+                    if isinstance(parsed, list):
+                        details["Animal_Models_Preclinical_Data"] = parsed
+                    else:
+                        details["Animal_Models_Preclinical_Data"] = [
+                            {
+                                "Model": "Not specified",
+                                "Key Results": "Not specified",
+                                "Year": "Not specified"
+                            }
+                        ]
+            except:
+                details["Animal_Models_Preclinical_Data"] = [
+                    {
+                        "Model": "Not specified",
+                        "Key Results": "Not specified",
+                        "Year": "Not specified"
+                    }
+                ]
+        
+        # Ensure each animal model item has required fields
+        for i, item in enumerate(details["Animal_Models_Preclinical_Data"]):
+            if not isinstance(item, dict):
+                details["Animal_Models_Preclinical_Data"][i] = {
+                    "Model": str(item),
+                    "Key Results": "Not specified",
+                    "Year": "Not specified"
+                }
+            else:
+                if "Model" not in item:
+                    item["Model"] = "Not specified"
+                if "Key Results" not in item:
+                    item["Key Results"] = "Not specified"
+                if "Year" not in item:
+                    item["Year"] = "Not specified"
+        
+        # Normalize Clinical_Trials
+        if "Clinical_Trials" not in details or not details["Clinical_Trials"]:
+            details["Clinical_Trials"] = [
+                {
+                    "Phase": "Not specified",
+                    "N": "Not specified",
+                    "Duration": "Not specified",
+                    "Results": {
+                        "Safety": "Not specified",
+                        "Efficacy": "Not specified"
+                    },
+                    "Dates": "Not specified"
+                }
+            ]
+        elif not isinstance(details["Clinical_Trials"], list):
+            # Try to parse if it's a string
+            try:
+                if isinstance(details["Clinical_Trials"], str):
+                    parsed = json.loads(details["Clinical_Trials"])
+                    if isinstance(parsed, list):
+                        details["Clinical_Trials"] = parsed
+                    else:
+                        details["Clinical_Trials"] = [
+                            {
+                                "Phase": "Not specified",
+                                "N": "Not specified",
+                                "Duration": "Not specified",
+                                "Results": {
+                                    "Safety": "Not specified",
+                                    "Efficacy": "Not specified"
+                                },
+                                "Dates": "Not specified"
+                            }
+                        ]
+            except:
+                details["Clinical_Trials"] = [
+                    {
+                        "Phase": "Not specified",
+                        "N": "Not specified",
+                        "Duration": "Not specified",
+                        "Results": {
+                            "Safety": "Not specified",
+                            "Efficacy": "Not specified"
+                        },
+                        "Dates": "Not specified"
+                    }
+                ]
+        
+        # Ensure each clinical trial item has required fields
+        for i, item in enumerate(details["Clinical_Trials"]):
+            if not isinstance(item, dict):
+                details["Clinical_Trials"][i] = {
+                    "Phase": str(item),
+                    "N": "Not specified",
+                    "Duration": "Not specified",
+                    "Results": {
+                        "Safety": "Not specified",
+                        "Efficacy": "Not specified"
+                    },
+                    "Dates": "Not specified"
+                }
+            else:
+                if "Phase" not in item:
+                    item["Phase"] = "Not specified"
+                if "N" not in item:
+                    item["N"] = "Not specified"
+                if "Duration" not in item:
+                    item["Duration"] = "Not specified"
+                if "Dates" not in item:
+                    item["Dates"] = "Not specified"
+                
+                # Ensure Results has proper structure
+                if "Results" not in item or not item["Results"]:
+                    item["Results"] = {
+                        "Safety": "Not specified",
+                        "Efficacy": "Not specified"
+                    }
+                elif not isinstance(item["Results"], dict):
+                    item["Results"] = {
+                        "Safety": "Not specified",
+                        "Efficacy": "Not specified"
+                    }
+                else:
+                    if "Safety" not in item["Results"]:
+                        item["Results"]["Safety"] = "Not specified"
+                    if "Efficacy" not in item["Results"]:
+                        item["Results"]["Efficacy"] = "Not specified"
+        
+        # Normalize Upcoming_Milestones
+        if "Upcoming_Milestones" not in details or not details["Upcoming_Milestones"]:
+            details["Upcoming_Milestones"] = ["Not specified"]
+        elif not isinstance(details["Upcoming_Milestones"], list):
+            if details["Upcoming_Milestones"] == "Not specified":
+                details["Upcoming_Milestones"] = ["Not specified"]
+            else:
+                details["Upcoming_Milestones"] = [str(details["Upcoming_Milestones"])]
+        elif len(details["Upcoming_Milestones"]) == 0:
+            details["Upcoming_Milestones"] = ["Not specified"]
+        
+        # Normalize References
+        if "References" not in details or not details["References"]:
+            details["References"] = ["Not specified"]
+        elif not isinstance(details["References"], list):
+            if details["References"] == "Not specified":
+                details["References"] = ["Not specified"]
+            else:
+                details["References"] = [str(details["References"])]
+        elif len(details["References"]) == 0:
+            details["References"] = ["Not specified"]
+
+    def _create_fallback_details(self, asset: str) -> Dict[str, Any]:
+        """
+        Creates a fallback details object with proper structure.
+        
+        Args:
+            asset: The asset name/identifier
+            
+        Returns:
+            A properly structured fallback details dictionary
+        """
+        return {
+            "Name/Number": asset,
+            "Mechanism_of_Action": "Not specified",
+            "Target": "Not specified",
+            "Indication": "Not specified",
+            "Animal_Models_Preclinical_Data": [
+                {
+                    "Model": "Not specified", 
+                    "Key Results": "Not specified", 
+                    "Year": "Not specified"
+                }
+            ],
+            "Clinical_Trials": [
+                {
+                    "Phase": "Not specified",
+                    "N": "Not specified",
+                    "Duration": "Not specified",
+                    "Results": {
+                        "Safety": "Not specified",
+                        "Efficacy": "Not specified"
+                    },
+                    "Dates": "Not specified"
+                }
+            ],
+            "Upcoming_Milestones": ["Not specified"],
+            "References": ["Not specified"]
+        }
+            
+    def _normalize_field_structures(self, details: Dict[str, Any]) -> None:
+        """
+        Ensures all fields have the expected structure.
+        """
+        logger.info("Normalizing Animal_Models_Preclinical_Data field")
+        # Normalize Animal_Models_Preclinical_Data
+        try:
+            if not isinstance(details.get("Animal_Models_Preclinical_Data"), list):
+                logger.info("Converting Animal_Models_Preclinical_Data to list")
+                if details.get("Animal_Models_Preclinical_Data") == "Not specified":
+                    details["Animal_Models_Preclinical_Data"] = [
+                        {
+                            "Model": "Not specified",
+                            "Key Results": "Not specified",
+                            "Year": "Not specified"
+                        }
+                    ]
+                else:
+                    # Try to parse if it's a JSON string
+                    try:
+                        if isinstance(details.get("Animal_Models_Preclinical_Data"), str):
+                            parsed = json.loads(details.get("Animal_Models_Preclinical_Data"))
+                            if isinstance(parsed, list):
+                                details["Animal_Models_Preclinical_Data"] = parsed
+                            else:
+                                details["Animal_Models_Preclinical_Data"] = [
+                                    {
+                                        "Model": "Not specified",
+                                        "Key Results": "Not specified",
+                                        "Year": "Not specified"
+                                    }
+                                ]
+                    except:
+                        details["Animal_Models_Preclinical_Data"] = [
+                            {
+                                "Model": "Not specified",
+                                "Key Results": "Not specified",
+                                "Year": "Not specified"
+                            }
+                        ]
+        except Exception as e:
+            logger.error(f"Error normalizing Animal_Models_Preclinical_Data: {str(e)}")
+            details["Animal_Models_Preclinical_Data"] = [
+                {
+                    "Model": "Not specified",
+                    "Key Results": "Not specified",
+                    "Year": "Not specified"
+                }
+            ]
+            
+        logger.info("Normalizing Clinical_Trials field")
+        # Normalize Clinical_Trials
+        try:
+            if not isinstance(details.get("Clinical_Trials"), list):
+                logger.info("Converting Clinical_Trials to list")
+                if details.get("Clinical_Trials") == "Not specified":
+                    details["Clinical_Trials"] = [
+                        {
+                            "Phase": "Not specified",
+                            "N": "Not specified",
+                            "Duration": "Not specified",
+                            "Results": {
+                                "Safety": "Not specified",
+                                "Efficacy": "Not specified"
+                            },
+                            "Dates": "Not specified"
+                        }
+                ]
+                else:
+                    # Try to parse if it's a JSON string
+                    try:
+                        if isinstance(details.get("Clinical_Trials"), str):
+                            parsed = json.loads(details.get("Clinical_Trials"))
+                            if isinstance(parsed, list):
+                                details["Clinical_Trials"] = parsed
+                            else:
+                                details["Clinical_Trials"] = [
+                                    {
+                                        "Phase": "Not specified",
+                                        "N": "Not specified",
+                                        "Duration": "Not specified",
+                                        "Results": {
+                                            "Safety": "Not specified",
+                                            "Efficacy": "Not specified"
+                                        },
+                                        "Dates": "Not specified"
+                                    }
+                                ]
+                    except:
+                        details["Clinical_Trials"] = [
+                            {
+                                "Phase": "Not specified",
+                                "N": "Not specified",
+                                "Duration": "Not specified",
+                                "Results": {
+                                    "Safety": "Not specified",
+                                    "Efficacy": "Not specified"
+                                },
+                                "Dates": "Not specified"
+                            }
+                        ]
+        except Exception as e:
+            logger.error(f"Error normalizing Clinical_Trials: {str(e)}")
+            details["Clinical_Trials"] = [
+                {
+                    "Phase": "Not specified",
+                    "N": "Not specified",
+                    "Duration": "Not specified",
+                    "Results": {
+                        "Safety": "Not specified",
+                        "Efficacy": "Not specified"
+                    },
+                    "Dates": "Not specified"
+                }
+            ]
+        
+        logger.info("Normalizing Upcoming_Milestones field")
+        # Normalize Upcoming_Milestones
+        try:
+            if not isinstance(details.get("Upcoming_Milestones"), list):
+                logger.info("Converting Upcoming_Milestones to list")
+                if details.get("Upcoming_Milestones") == "Not specified":
+                    details["Upcoming_Milestones"] = ["Not specified"]
+                elif details.get("Upcoming_Milestones") is None:
+                    details["Upcoming_Milestones"] = ["Not specified"]
+                else:
+                    # Try to parse if it's a JSON string
+                    try:
+                        if isinstance(details.get("Upcoming_Milestones"), str):
+                            parsed = json.loads(details.get("Upcoming_Milestones"))
+                            if isinstance(parsed, list):
+                                details["Upcoming_Milestones"] = parsed
+                            else:
+                                details["Upcoming_Milestones"] = [str(details.get("Upcoming_Milestones"))]
+                    except:
+                        details["Upcoming_Milestones"] = [str(details.get("Upcoming_Milestones"))]
+        except Exception as e:
+            logger.error(f"Error normalizing Upcoming_Milestones: {str(e)}")
+            details["Upcoming_Milestones"] = ["Not specified"]
+            
+        logger.info("Normalizing References field")
+        # Normalize References
+        try:
+            if not isinstance(details.get("References"), list):
+                logger.info("Converting References to list")
+                if details.get("References") == "Not specified":
+                    details["References"] = ["Not specified"]
+                elif details.get("References") is None:
+                    details["References"] = ["Not specified"]
+                else:
+                    # Try to parse if it's a JSON string
+                    try:
+                        if isinstance(details.get("References"), str):
+                            parsed = json.loads(details.get("References"))
+                            if isinstance(parsed, list):
+                                details["References"] = parsed
+                            else:
+                                details["References"] = [str(details.get("References"))]
+                    except:
+                        details["References"] = [str(details.get("References"))]
+        except Exception as e:
+            logger.error(f"Error normalizing References: {str(e)}")
+            details["References"] = ["Not specified"]
     
     def consolidate_data(self, asset_details: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -361,15 +722,32 @@ Be thorough and pick up all potential assets across the entire context.
             Consolidated list of asset details
         """
         try:
-            # Initialize merged data structure
+            # Initialize merged data structure with properly structured fields
             merged_data = defaultdict(lambda: {
                 "Name/Number": None,
-                "Mechanism of Action": "Not specified",
-                "Target(s)": "Not specified",
+                "Mechanism_of_Action": "Not specified",
+                "Target": "Not specified",
                 "Indication": "Not specified",
-                "Animal Models/Preclinical Data": "Not specified",
-                "Clinical Trials": "Not specified",
-                "Upcoming Milestones": "Not specified",
+                "Animal_Models_Preclinical_Data": [
+                    {
+                        "Model": "Not specified",
+                        "Key Results": "Not specified",
+                        "Year": "Not specified"
+                    }
+                ],
+                "Clinical_Trials": [
+                    {
+                        "Phase": "Not specified",
+                        "N": "Not specified",
+                        "Duration": "Not specified",
+                        "Results": {
+                            "Safety": "Not specified",
+                            "Efficacy": "Not specified"
+                        },
+                        "Dates": "Not specified"
+                    }
+                ],
+                "Upcoming_Milestones": ["Not specified"],
                 "References": []
             })
             
@@ -385,25 +763,39 @@ Be thorough and pick up all potential assets across the entire context.
                 name = details.get("Name/Number", "Unknown")
                 logger.info(f"Processing asset: {name}")
                 
-                # Process and normalize complex values
+                # Process complex values to ensure they maintain the right structure
                 processed_details = details.copy()
                 for key in processed_details.keys():
-                    if not isinstance(processed_details[key], str):
-                        processed_details[key] = self._normalize_complex_value(processed_details[key])
+                    processed_details[key] = self._normalize_complex_value(processed_details[key])
                 
-                # Update fields with non-empty values
-                merged_data[name].update({
-                    "Name/Number": name,
-                    "Mechanism of Action": processed_details.get("Mechanism of Action", "Not specified"),
-                    "Target(s)": processed_details.get("Target(s)", "Not specified"),
-                    "Indication": processed_details.get("Indication", "Not specified"),
-                    "Animal Models/Preclinical Data": processed_details.get("Animal Models/Preclinical Data", "Not specified"),
-                    "Clinical Trials": processed_details.get("Clinical Trials", "Not specified"),
-                    "Upcoming Milestones": processed_details.get("Upcoming Milestones", "Not specified")
-                })
+                # Update fields with meaningful values (skip "Not specified")
+                if processed_details.get("Mechanism_of_Action") != "Not specified":
+                    merged_data[name]["Mechanism_of_Action"] = processed_details.get("Mechanism_of_Action")
+                    
+                if processed_details.get("Target") != "Not specified":
+                    merged_data[name]["Target"] = processed_details.get("Target")
+                    
+                if processed_details.get("Indication") != "Not specified":
+                    merged_data[name]["Indication"] = processed_details.get("Indication")
+                
+                # Handle structured data fields
+                animal_models = processed_details.get("Animal_Models_Preclinical_Data")
+                if animal_models and animal_models != "Not specified":
+                    if isinstance(animal_models, list) and len(animal_models) > 0 and animal_models[0].get("Model") != "Not specified":
+                        merged_data[name]["Animal_Models_Preclinical_Data"] = animal_models
+                
+                clinical_trials = processed_details.get("Clinical_Trials")
+                if clinical_trials and clinical_trials != "Not specified":
+                    if isinstance(clinical_trials, list) and len(clinical_trials) > 0 and clinical_trials[0].get("Phase") != "Not specified":
+                        merged_data[name]["Clinical_Trials"] = clinical_trials
+                
+                milestones = processed_details.get("Upcoming_Milestones")
+                if milestones and milestones != "Not specified":
+                    if isinstance(milestones, list) and len(milestones) > 0 and milestones[0] != "Not specified":
+                        merged_data[name]["Upcoming_Milestones"] = milestones
                 
                 # Handle references properly
-                ref = details.get("References", "")
+                ref = processed_details.get("References", "")
                 if isinstance(ref, list):
                     merged_data[name]["References"].extend(ref)
                 elif ref and ref != "Not specified":
@@ -422,27 +814,25 @@ Be thorough and pick up all potential assets across the entire context.
                     
                     # Remove duplicates
                     data["References"] = list(set(cleaned_refs))
+                    # If no references, set a default
+                    if not data["References"]:
+                        data["References"] = ["Not specified"]
                 else:
                     # Make sure References is always a list
-                    data["References"] = []
+                    data["References"] = ["Not specified"]
             
-            # Create final data structure for output
+            # Create final data structure for output, ensuring we keep complex structure
             final_data = []
             for name, data in merged_data.items():
-                # Ensure all values are strings for Pydantic validation
-                for key in data.keys():
-                    if key != "References" and not isinstance(data[key], str):
-                        data[key] = self._normalize_complex_value(data[key])
-                
                 final_data.append({
                     "Name/Number": name,
-                    "Mechanism of Action": data["Mechanism of Action"],
-                    "Target(s)": data["Target(s)"],
+                    "Mechanism_of_Action": data["Mechanism_of_Action"],
+                    "Target": data["Target"],
                     "Indication": data["Indication"],
-                    "Animal Models/Preclinical Data": data["Animal Models/Preclinical Data"],
-                    "Clinical Trials": data["Clinical Trials"],
-                    "Upcoming Milestones": data["Upcoming Milestones"],
-                    "References": ", ".join(data["References"]) if data["References"] else "Not specified"
+                    "Animal_Models_Preclinical_Data": data["Animal_Models_Preclinical_Data"],
+                    "Clinical_Trials": data["Clinical_Trials"],
+                    "Upcoming_Milestones": data["Upcoming_Milestones"],
+                    "References": data["References"]
                 })
             
             logger.info(f"Consolidated data for {len(final_data)} unique assets")
@@ -451,22 +841,29 @@ Be thorough and pick up all potential assets across the entire context.
             logger.error(f"Error consolidating data: {str(e)}")
             logger.error(f"Stack trace: {traceback.format_exc()}")
             raise
-    def df_to_markdown_with_delimiters(self,df):
-        
+    
+    def df_to_markdown_with_delimiters(self, df):
         # Get column names and data
         columns = df.columns.tolist()
         data = df.values.tolist()
         
         # Create header row
-        markdown = "| " + " | ".join([str(col) for col in columns]) + " |\n"
+        markdown = "| " + " | ".join([str(col).replace('_', ' ') for col in columns]) + " |\n"
         
         # Create separator row
         markdown += "| " + " | ".join(["---" for _ in columns]) + " |\n"
         
         # Create data rows
         for row in data:
-            # Convert all values to strings
-            row_str = [str(cell).replace('\n', ' ').replace('\r', '') for cell in row]
+            # Convert all values to strings, handling complex objects
+            row_str = []
+            for cell in row:
+                if isinstance(cell, (dict, list)):
+                    cell_str = json.dumps(cell, indent=2).replace('\n', ' ').replace('\r', '')
+                else:
+                    cell_str = str(cell).replace('\n', ' ').replace('\r', '')
+                row_str.append(cell_str)
+                
             markdown += "| " + " | ".join(row_str) + " |\n"
     
         return markdown
@@ -488,8 +885,20 @@ Be thorough and pick up all potential assets across the entire context.
             # S3 output directory
             s3_output_dir = f"filings/{self.ticker}"
             
-            # Create DataFrame
-            df = pd.DataFrame(drug_data)
+            # Deep copy the data to avoid modifying the original
+            json_data = json.loads(json.dumps(drug_data))
+            
+            # Create DataFrame - we need to stringify complex fields for CSV
+            df_data = []
+            for drug in json_data:
+                drug_row = drug.copy()
+                # Convert complex fields to JSON strings for CSV
+                for key, value in drug_row.items():
+                    if isinstance(value, (dict, list)):
+                        drug_row[key] = json.dumps(value)
+                df_data.append(drug_row)
+                
+            df = pd.DataFrame(df_data)
             
             # Save CSV to S3
             csv_buffer = io.StringIO()
@@ -499,26 +908,316 @@ Be thorough and pick up all potential assets across the entire context.
             logger.info(f"Saved CSV to S3 for {self.ticker}")
             
             # Create Markdown content
-            # markdown_table = tabulate(df, headers="keys", tablefmt="pipe", showindex=False)
             markdown_table = self.df_to_markdown_with_delimiters(df)
-            markdown_content = f"# {self.ticker.upper()} Drug Asset Summary\n\n{markdown_table}\n\n"
+            markdown_content = f"# {self.ticker.upper()} Drug Development Pipeline\n\n{markdown_table}\n\n"
             
-            # Add additional sections
-            platforms = [d["Name/Number"] for d in drug_data if "platform" in str(d.get("Mechanism of Action", "")).lower() or "technology" in str(d.get("Mechanism of Action", "")).lower()]
-            if platforms:
-                markdown_content += "**Platform Technologies:**\n"
-                markdown_content += "\n".join([f"- {plat}" for plat in platforms]) + "\n\n"
+            # Add disclaimer
+            markdown_content += "*Note: Data may be incomplete due to limitations in filings or processing.*"
             
-            tech_areas = set()
-            for d in drug_data:
-                notes = str(d.get("Mechanism of Action", "")).lower() + str(d.get("Target(s)", "")).lower()
-                if "rna" in notes or "oligonucleotide" in notes:
-                    tech_areas.add("RNA editing/targeting technologies")
-                if "snp" in notes:
-                    tech_areas.add("SNP-targeting for specific genetic diseases")
-            if tech_areas:
-                markdown_content += "**Key Technology Areas:**\n"
-                markdown_content += "\n".join([f"- {area}" for area in tech_areas]) + "\n\n"
+            # Save Markdown to S3
+            md_key = f"{s3_output_dir}/drug_summary.md"
+            upload_to_s3(markdown_content, md_key)
+            logger.info(f"Saved Markdown to S3 for {self.ticker}")
+            
+            # Return paths to output files
+            return {
+                "csv": f"s3://{s3_output_dir}/drug_summary.csv",
+                "markdown": f"s3://{s3_output_dir}/drug_summary.md"
+            }
+        except Exception as e:
+            logger.error(f"Error saving output to S3 for {self.ticker}: {str(e)}")
+            raise
+    
+    def analyze(self) -> Dict[str, Any]:
+        """
+        Run the full analysis pipeline for the ticker.
+        
+        Returns:
+            Dictionary with analysis results
+        """
+        try:
+            # Step 1: Identify assets
+            assets = self.identify_assets()
+            
+            if not assets:
+                logger.warning(f"No assets identified for {self.ticker}")
+                return {
+                    "ticker": self.ticker,
+                    "job_id": self.job_id,
+                    "assets": [],
+                    "s3_paths": {}
+                }
+            
+            # Step 2: Extract details for each asset
+            asset_details = []
+            for asset in assets:
+                details = self.extract_asset_details(asset)
+                if details:
+                    asset_details.append(details)
+            
+            if not asset_details:
+                logger.warning(f"No details extracted for {self.ticker}")
+                return {
+                    "ticker": self.ticker,
+                    "job_id": self.job_id,
+                    "assets": [],
+                    "s3_paths": {}
+                }
+            
+            # Step 3: Consolidate data
+            consolidated_data = self.consolidate_data(asset_details)
+            
+            # Step 4: Save output to S3
+            s3_paths = self.save_output(consolidated_data)
+            
+            # Return results
+            return {
+                "ticker": self.ticker,
+                "job_id": self.job_id,
+                "assets": consolidated_data,
+                "s3_paths": s3_paths
+            }
+        except Exception as e:
+            logger.error(f"Analysis failed for {self.ticker}: {str(e)}")
+            raise
+        finally:
+            # Clean up temporary files
+            self._clean_up()
+    
+    @staticmethod
+    def _clean_json_response(text: str) -> str:
+        """
+        Clean a JSON response to make it parseable.
+        
+        Args:
+            text: Raw JSON response text
+            
+        Returns:
+            Cleaned JSON string
+        """
+        # Remove code block markers if present
+        text = text.strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        
+        # Clean invalid control characters
+        text = text.replace('\r', '').replace('\n', ' ').replace('\t', ' ')
+        text = ''.join(ch for ch in text if ord(ch) >= 32 or ch == '\n')
+        
+        # Try to extract JSON from non-JSON text
+        if not (text.strip().startswith("[") or text.strip().startswith("{")):
+            import re
+            json_match = re.search(r'\[.*?\]|\{.*?\}', text, re.DOTALL)
+            if json_match:
+                text = json_match.group(0)
+            else:
+                logger.error(f"No valid JSON in response: {text}")
+                return "[]"
+        
+        return text.strip()
+    def consolidate_data(self, asset_details: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Merge data for each asset, resolving conflicts and combining references.
+        
+        Args:
+            asset_details: List of asset detail dictionaries
+            
+        Returns:
+            Consolidated list of asset details
+        """
+        try:
+            # Initialize merged data structure with properly structured fields
+            merged_data = defaultdict(lambda: {
+                "Name/Number": None,
+                "Mechanism_of_Action": "Not specified",
+                "Target": "Not specified",
+                "Indication": "Not specified",
+                "Animal_Models_Preclinical_Data": [
+                    {
+                        "Model": "Not specified",
+                        "Key Results": "Not specified",
+                        "Year": "Not specified"
+                    }
+                ],
+                "Clinical_Trials": [
+                    {
+                        "Phase": "Not specified",
+                        "N": "Not specified",
+                        "Duration": "Not specified",
+                        "Results": {
+                            "Safety": "Not specified",
+                            "Efficacy": "Not specified"
+                        },
+                        "Dates": "Not specified"
+                    }
+                ],
+                "Upcoming_Milestones": ["Not specified"],
+                "References": []
+            })
+            
+            # Track asset names for debugging
+            asset_names = [details.get("Name/Number", "Unknown") for details in asset_details if details]
+            logger.info(f"Consolidating assets: {asset_names}")
+            
+            # Process each asset detail
+            for details in asset_details:
+                if not details:
+                    continue
+                
+                name = details.get("Name/Number", "Unknown")
+                logger.info(f"Processing asset: {name}")
+                
+                # Process complex values to ensure they maintain the right structure
+                processed_details = details.copy()
+                for key in processed_details.keys():
+                    processed_details[key] = self._normalize_complex_value(processed_details[key])
+                
+                # Update fields with meaningful values (skip "Not specified")
+                if processed_details.get("Mechanism_of_Action") != "Not specified":
+                    merged_data[name]["Mechanism_of_Action"] = processed_details.get("Mechanism_of_Action")
+                    
+                if processed_details.get("Target") != "Not specified":
+                    merged_data[name]["Target"] = processed_details.get("Target")
+                    
+                if processed_details.get("Indication") != "Not specified":
+                    merged_data[name]["Indication"] = processed_details.get("Indication")
+                
+                # Handle structured data fields
+                animal_models = processed_details.get("Animal_Models_Preclinical_Data")
+                if animal_models and animal_models != "Not specified":
+                    if isinstance(animal_models, list) and len(animal_models) > 0 and animal_models[0].get("Model") != "Not specified":
+                        merged_data[name]["Animal_Models_Preclinical_Data"] = animal_models
+                
+                clinical_trials = processed_details.get("Clinical_Trials")
+                if clinical_trials and clinical_trials != "Not specified":
+                    if isinstance(clinical_trials, list) and len(clinical_trials) > 0 and clinical_trials[0].get("Phase") != "Not specified":
+                        merged_data[name]["Clinical_Trials"] = clinical_trials
+                
+                milestones = processed_details.get("Upcoming_Milestones")
+                if milestones and milestones != "Not specified":
+                    if isinstance(milestones, list) and len(milestones) > 0 and milestones[0] != "Not specified":
+                        merged_data[name]["Upcoming_Milestones"] = milestones
+                
+                # Handle references properly
+                ref = processed_details.get("References", "")
+                if isinstance(ref, list):
+                    merged_data[name]["References"].extend(ref)
+                elif ref and ref != "Not specified":
+                    merged_data[name]["References"].append(ref)
+            
+            # Clean up references (remove duplicates)
+            for name, data in merged_data.items():
+                if isinstance(data["References"], list):
+                    # Convert any non-string references to strings
+                    cleaned_refs = []
+                    for ref in data["References"]:
+                        if not isinstance(ref, str):
+                            ref = str(ref)
+                        if ref and ref != "Not specified":
+                            cleaned_refs.append(ref)
+                    
+                    # Remove duplicates
+                    data["References"] = list(set(cleaned_refs))
+                    # If no references, set a default
+                    if not data["References"]:
+                        data["References"] = ["Not specified"]
+                else:
+                    # Make sure References is always a list
+                    data["References"] = ["Not specified"]
+            
+            # Create final data structure for output, ensuring we keep complex structure
+            final_data = []
+            for name, data in merged_data.items():
+                final_data.append({
+                    "Name/Number": name,
+                    "Mechanism_of_Action": data["Mechanism_of_Action"],
+                    "Target": data["Target"],
+                    "Indication": data["Indication"],
+                    "Animal_Models_Preclinical_Data": data["Animal_Models_Preclinical_Data"],
+                    "Clinical_Trials": data["Clinical_Trials"],
+                    "Upcoming_Milestones": data["Upcoming_Milestones"],
+                    "References": data["References"]
+                })
+            
+            logger.info(f"Consolidated data for {len(final_data)} unique assets")
+            return final_data
+        except Exception as e:
+            logger.error(f"Error consolidating data: {str(e)}")
+            logger.error(f"Stack trace: {traceback.format_exc()}")
+            raise
+    
+    def df_to_markdown_with_delimiters(self, df):
+        # Get column names and data
+        columns = df.columns.tolist()
+        data = df.values.tolist()
+        
+        # Create header row
+        markdown = "| " + " | ".join([str(col).replace('_', ' ') for col in columns]) + " |\n"
+        
+        # Create separator row
+        markdown += "| " + " | ".join(["---" for _ in columns]) + " |\n"
+        
+        # Create data rows
+        for row in data:
+            # Convert all values to strings, handling complex objects
+            row_str = []
+            for cell in row:
+                if isinstance(cell, (dict, list)):
+                    cell_str = json.dumps(cell, indent=2).replace('\n', ' ').replace('\r', '')
+                else:
+                    cell_str = str(cell).replace('\n', ' ').replace('\r', '')
+                row_str.append(cell_str)
+                
+            markdown += "| " + " | ".join(row_str) + " |\n"
+    
+        return markdown
+       
+    def save_output(self, drug_data: List[Dict[str, Any]]) -> Dict[str, str]:
+        """
+        Save drug data as CSV and Markdown with additional summaries to S3.
+        
+        Args:
+            drug_data: List of drug data dictionaries
+            
+        Returns:
+            Dictionary of S3 paths for output files
+        """
+        try:
+            # Log the data before saving
+            logger.info(f"Saving {len(drug_data)} assets to CSV and Markdown in S3")
+            
+            # S3 output directory
+            s3_output_dir = f"filings/{self.ticker}"
+            
+            # Deep copy the data to avoid modifying the original
+            json_data = json.loads(json.dumps(drug_data))
+            
+            # Create DataFrame - we need to stringify complex fields for CSV
+            df_data = []
+            for drug in json_data:
+                drug_row = drug.copy()
+                # Convert complex fields to JSON strings for CSV
+                for key, value in drug_row.items():
+                    if isinstance(value, (dict, list)):
+                        drug_row[key] = json.dumps(value)
+                df_data.append(drug_row)
+                
+            df = pd.DataFrame(df_data)
+            
+            # Save CSV to S3
+            csv_buffer = io.StringIO()
+            df.to_csv(csv_buffer, index=False)
+            csv_key = f"{s3_output_dir}/drug_summary.csv"
+            upload_to_s3(csv_buffer.getvalue(), csv_key)
+            logger.info(f"Saved CSV to S3 for {self.ticker}")
+            
+            # Create Markdown content
+            markdown_table = self.df_to_markdown_with_delimiters(df)
+            markdown_content = f"# {self.ticker.upper()} Drug Development Pipeline\n\n{markdown_table}\n\n"
             
             # Add disclaimer
             markdown_content += "*Note: Data may be incomplete due to limitations in filings or processing.*"

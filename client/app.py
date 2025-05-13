@@ -6,6 +6,8 @@ import base64
 from io import StringIO
 import os
 from dotenv import load_dotenv
+import time
+import uuid
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,6 +19,26 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# Cache clearing mechanism
+# 1. Generate a unique session ID
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+    
+    # Clear all cached data on new session
+    if 'data' in st.session_state:
+        del st.session_state.data
+    if 'df' in st.session_state:
+        del st.session_state.df
+    if 'filtered_df' in st.session_state:
+        del st.session_state.filtered_df
+    if 'ticker' in st.session_state:
+        del st.session_state.ticker
+    if 'has_run' in st.session_state:
+        del st.session_state.has_run
+    
+    # Also clear Streamlit's internal cache
+    st.cache_data.clear()
 
 # Custom CSS
 st.markdown("""
@@ -76,6 +98,27 @@ if 'has_run' not in st.session_state:
 st.title("Drug Asset Analysis Dashboard")
 st.markdown("Analyze SEC filings to extract drug, program, and platform information")
 
+# Add a manual cache clear button in the sidebar
+def clear_cache():
+    """Clear all cached data"""
+    # Clear session state
+    for key in list(st.session_state.keys()):
+        if key != 'session_id':  # Keep session ID
+            del st.session_state[key]
+    
+    # Reinitialize essential state
+    st.session_state.data = None
+    st.session_state.df = None
+    st.session_state.filtered_df = None
+    st.session_state.ticker = ""
+    st.session_state.has_run = False
+    
+    # Clear Streamlit's cache
+    st.cache_data.clear()
+    
+    # Force a rerun to refresh the UI
+    st.rerun()
+
 # Function to create a download link
 def get_download_link(data, filename, link_text):
     """Generate a download link for the data"""
@@ -122,9 +165,9 @@ def df_to_markdown_with_delimiters(df):
 
     return markdown
 
-# Function to fetch data from API - cached to avoid repeated API calls
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_drug_data(ticker):
+# Function to fetch data from API - use session_id in cache key to refresh on reload
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
+def fetch_drug_data(ticker, session_id):
     """Fetch drug data from the API"""
     try:
         response = requests.post(
@@ -153,8 +196,8 @@ def handle_submit():
     
     # Show loading spinner
     with st.spinner(f"Analyzing SEC filings for {ticker}..."):
-        # Fetch data
-        st.session_state.data = fetch_drug_data(ticker)
+        # Fetch data using session_id to ensure fresh cache on page reload
+        st.session_state.data = fetch_drug_data(ticker, st.session_state.session_id)
     
     # If data is loaded successfully
     if st.session_state.data:
@@ -190,6 +233,9 @@ def filter_by_indication():
 with st.sidebar:
     st.header("Search Parameters")
     ticker_input = st.text_input("Enter Ticker Symbol", value=st.session_state.ticker if st.session_state.ticker else "WVE", key="ticker_input").upper()
+    
+    # Add cache clear button
+    st.button("Clear Cache", on_click=clear_cache, help="Clear all cached data and reset the application")
     
     st.subheader("Filtering Options")
     
@@ -307,8 +353,13 @@ if st.session_state.has_run and st.session_state.data:
         for file_type, path in st.session_state.data['s3_paths'].items():
             st.code(f"{file_type.upper()}: {path}")
 
+# Show session info for debugging (can be removed in production)
+with st.sidebar.expander("Debug Info", expanded=False):
+    st.write(f"Session ID: {st.session_state.session_id}")
+    st.write(f"Cache Status: Fresh on reload")
+
 # Initial state - before search
-elif not st.session_state.has_run:
+if not st.session_state.has_run:
     st.info("Enter a ticker symbol in the sidebar and click 'Analyze SEC Filings' to start.")
     
     # Show example of what the output will look like
