@@ -20,7 +20,7 @@ from app.config import EMBEDDINGS_MODEL
 logger = logging.getLogger(__name__)
 
 # Initialize NLP tools
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=3000, chunk_overlap=1000)
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=400)
 
 
 class VectorStoreService:

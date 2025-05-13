@@ -27,23 +27,44 @@ class DrugAnalysisRequest(BaseModel):
     ticker: str = Field(..., description="Stock ticker symbol (e.g., 'WVE')")
 
 
+class AnimalModel(BaseModel):
+    """Model for animal model/preclinical data"""
+    Model: str
+    Key_Results: str = Field(..., alias="Key Results")
+    Year: str
+
+
+class TrialResults(BaseModel):
+    """Model for clinical trial results"""
+    Safety: str
+    Efficacy: str
+
+
+class ClinicalTrial(BaseModel):
+    """Model for clinical trial data"""
+    Phase: str
+    N: str
+    Duration: str
+    Results: TrialResults
+    Dates: str
+
+
 class DrugAsset(BaseModel):
     """Model for a drug asset"""
     name: str = Field(..., alias="Name/Number")
-    mechanism: str = Field(..., alias="Mechanism of Action")
-    targets: str = Field(..., alias="Target(s)")
+    mechanism: str = Field(..., alias="Mechanism_of_Action")
+    targets: str = Field(..., alias="Target")
     indication: str = Field(..., alias="Indication")
-    preclinical_data: str = Field(..., alias="Animal Models/Preclinical Data")
-    clinical_trials: str = Field(..., alias="Clinical Trials")
-    upcoming_milestones: str = Field(..., alias="Upcoming Milestones")
-    references: str = Field(..., alias="References")
+    preclinical_data: List[AnimalModel] = Field(..., alias="Animal_Models_Preclinical_Data")
+    clinical_trials: List[ClinicalTrial] = Field(..., alias="Clinical_Trials")
+    upcoming_milestones: List[str] = Field(..., alias="Upcoming_Milestones")
+    references: List[str] = Field(..., alias="References")
 
 
 class DrugAnalysisResponse(BaseModel):
     """Response model for drug/program analysis"""
     ticker: str
     assets: List[DrugAsset]
-    summary: Optional[str] = None
     s3_paths: Dict[str, str]
 
 

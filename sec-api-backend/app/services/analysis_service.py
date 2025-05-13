@@ -255,8 +255,7 @@ class AnalysisService:
             context = "\n\n".join([doc.page_content for doc in docs])
             logger.info(f"Retrieved {len(docs)} document chunks for context")
             
-            # Create a system prompt that doesn't use any 'Model' or 'Phase' words that could
-            # be confused as template variables
+           
             system_prompt = (
                 "You are an expert in biotech SEC filings and drug development. "
                 "Extract all available information about the specified drug from the provided context. "
@@ -264,7 +263,7 @@ class AnalysisService:
                 "Format your response as a JSON object with these exact fields:\n"
                 "{\n"
                 '  "Name/Number": "The drug identifier",\n'
-                '  "Mechanism_of_Action": "How the drug works only the ans like antisense oligonucleotide (ASO) ",\n'
+                '  "Mechanism_of_Action": "How the drug works keep it precise and concise, example: antisense oligonucleotide (ASO) ",\n'
                 '  "Target": "The biological target",\n'
                 '  "Indication": "The disease being treated",\n'
                 '  "Animal_Models_Preclinical_Data": [\n'

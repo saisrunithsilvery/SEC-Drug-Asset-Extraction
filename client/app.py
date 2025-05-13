@@ -175,6 +175,7 @@ def fetch_drug_data(ticker, session_id):
             json={"ticker": ticker},
             headers={"Content-Type": "application/json"}
         )
+        print(response.json())
         
         if response.status_code == 200:
             data = response.json()
@@ -189,37 +190,107 @@ def fetch_drug_data(ticker, session_id):
         return None
 
 # Function to handle the submit button click
+# Function to handle the submit button click
+# Replace the current transformation logic in handle_submit() with this improved version
+# For better handling of complex nested data
 def handle_submit():
     st.session_state.has_run = True
     ticker = st.session_state.ticker_input
     st.session_state.ticker = ticker
-    
+
     # Show loading spinner
     with st.spinner(f"Analyzing SEC filings for {ticker}..."):
         # Fetch data using session_id to ensure fresh cache on page reload
         st.session_state.data = fetch_drug_data(ticker, st.session_state.session_id)
-    
+
     # If data is loaded successfully
     if st.session_state.data:
-        # Create a DataFrame from the assets
-        st.session_state.df = pd.DataFrame(st.session_state.data.get('assets', []))
+        # Transform field names to match frontend expectations
+        transformed_assets = []
+        for asset in st.session_state.data.get('assets', []):
+            # Process Animal_Models_Preclinical_Data
+            animal_data = asset.get("Animal_Models_Preclinical_Data", [])
+            if isinstance(animal_data, list) and animal_data:
+                # Convert nested structure to string representation
+                animal_data_str = json.dumps(animal_data, indent=2)
+            elif isinstance(animal_data, str):
+                # Keep as is if it's already a string
+                animal_data_str = animal_data
+            else:
+                animal_data_str = "Not available"
+            
+            # Process Clinical_Trials
+            clinical_trials = asset.get("Clinical_Trials", [])
+            if isinstance(clinical_trials, list) and clinical_trials:
+                # Convert nested structure to string representation
+                trials_str = json.dumps(clinical_trials, indent=2)
+            elif isinstance(clinical_trials, str):
+                # Keep as is if it's already a string
+                trials_str = clinical_trials
+            else:
+                trials_str = "Not available"
+            
+            # Process Upcoming_Milestones
+            milestones = asset.get("Upcoming_Milestones", [])
+            if isinstance(milestones, list) and milestones:
+                milestones_str = json.dumps(milestones, indent=2)
+            elif isinstance(milestones, str):
+                milestones_str = milestones
+            else:
+                milestones_str = "Not available"
+            
+            # Process References
+            references = asset.get("References", [])
+            if isinstance(references, list) and references:
+                references_str = json.dumps(references, indent=2)
+            elif isinstance(references, str):
+                references_str = references
+            else:
+                references_str = "Not available"
+            
+            transformed_asset = {
+                "Name/Number": asset.get("Name/Number", "Not available"),
+                "Mechanism of Action": asset.get("Mechanism_of_Action", "Not available"),
+                "Target(s)": asset.get("Target", "Not available"),
+                "Indication": asset.get("Indication", "Not available"),
+                "Animal Models/Preclinical Data": animal_data_str,
+                "Clinical Trials": trials_str,
+                "Upcoming Milestones": milestones_str,
+                "References": references_str
+            }
+            transformed_assets.append(transformed_asset)
         
-        # Rename columns for display
-        column_mapping = {
-            "Name/Number": "Name/Number",
-            "Mechanism of Action": "Mechanism of Action",
-            "Target(s)": "Target(s)",
-            "Indication": "Indication",
-            "Animal Models/Preclinical Data": "Animal Models/Preclinical Data",
-            "Clinical Trials": "Clinical Trials",
-            "Upcoming Milestones": "Upcoming Milestones",
-            "References": "References"
-        }
-        st.session_state.df = st.session_state.df.rename(columns=column_mapping)
+        # Create a DataFrame from the transformed assets
+        df = pd.DataFrame(transformed_assets)
+        
+        # Ensure all expected columns are visible
+        st.session_state.df = ensure_columns_visible(df)
         
         # Set the filtered dataframe to be the same as the main dataframe initially
         st.session_state.filtered_df = st.session_state.df.copy()
-
+def ensure_columns_visible(df):
+    """
+    Make sure all important columns are visible in the dataframe display
+    """
+    # Get the list of columns we want to ensure are displayed
+    all_expected_columns = [
+        "Name/Number", 
+        "Mechanism of Action", 
+        "Target(s)", 
+        "Indication", 
+        "Animal Models/Preclinical Data",
+        "Clinical Trials", 
+        "Upcoming Milestones", 
+        "References"
+    ]
+    
+    # Check which columns are missing and add them with placeholder content
+    for column in all_expected_columns:
+        if column not in df.columns:
+            df[column] = "Not available"
+    
+    # Ensure columns are in the expected order
+    return df[all_expected_columns]  
 # Function to handle indication filter change
 def filter_by_indication():
     selected_indication = st.session_state.selected_indication
@@ -305,72 +376,61 @@ if st.session_state.has_run and st.session_state.data:
     tab1, tab2 = st.tabs(["Standard View", "Expanded View"])
     
     with tab1:
-        # Standard view with limited columns
-        display_columns = ["Name/Number", "Mechanism of Action", "Target(s)", "Indication", "Clinical Trials", "Upcoming Milestones"]
+    # Standard view with all essential columns
+        display_columns = [
+            "Name/Number", 
+            "Mechanism of Action", 
+            "Target(s)", 
+            "Indication", 
+            "Animal Models/Preclinical Data",
+            "Clinical Trials", 
+            "Upcoming Milestones"
+        ]
         available_columns = [col for col in display_columns if col in st.session_state.filtered_df.columns]
-        st.dataframe(st.session_state.filtered_df[available_columns], use_container_width=True, height=500)
     
+    # Create a styled dataframe with proper column configurations
+        st.dataframe(
+            st.session_state.filtered_df[available_columns], 
+            use_container_width=True, 
+            height=500,
+            column_config={
+                "Animal Models/Preclinical Data": st.column_config.TextColumn(
+                    "Animal Models/Preclinical Data",
+                    width="large"
+                ),
+                "Clinical Trials": st.column_config.TextColumn(
+                    "Clinical Trials",
+                    width="large"
+                ),
+                "Upcoming Milestones": st.column_config.TextColumn(
+                    "Upcoming Milestones",
+                    width="medium"
+                )
+            }
+        )
+
     with tab2:
         # Expanded view with all columns
-        st.dataframe(st.session_state.filtered_df, use_container_width=True, height=600)
-    
-    # Display additional analyses
-    st.subheader("Asset Analysis")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Count by indication
-        st.subheader("Assets by Indication")
-        indication_counts = st.session_state.df['Indication'].value_counts()
-        st.bar_chart(indication_counts)
-    
-    with col2:
-        # Clinical trial phases distribution
-        st.subheader("Clinical Trial Phases")
-        
-        # Extract phases from Clinical Trials field (this is simplified)
-        if 'Clinical Trials' in st.session_state.df.columns:
-            phases = []
-            for trial_info in st.session_state.df['Clinical Trials']:
-                if 'Phase 1' in str(trial_info):
-                    phases.append('Phase 1')
-                elif 'Phase 2' in str(trial_info):
-                    phases.append('Phase 2')
-                elif 'Phase 3' in str(trial_info):
-                    phases.append('Phase 3')
-                elif 'Phase' in str(trial_info):
-                    phases.append('Other Phase')
-                else:
-                    phases.append('Not Specified')
-            
-            phase_counts = pd.Series(phases).value_counts()
-            st.bar_chart(phase_counts)
-    
-    # Display S3 paths if available
-    if 's3_paths' in st.session_state.data:
-        st.subheader("S3 Storage Locations")
-        for file_type, path in st.session_state.data['s3_paths'].items():
-            st.code(f"{file_type.upper()}: {path}")
-
-# Show session info for debugging (can be removed in production)
-with st.sidebar.expander("Debug Info", expanded=False):
-    st.write(f"Session ID: {st.session_state.session_id}")
-    st.write(f"Cache Status: Fresh on reload")
-
-# Initial state - before search
-if not st.session_state.has_run:
-    st.info("Enter a ticker symbol in the sidebar and click 'Analyze SEC Filings' to start.")
-    
-    # Show example of what the output will look like
-    st.subheader("Example Output")
-    
-    example_data = {
-        "Name/Number": ["Drug-A", "Drug-B", "Platform-X"],
-        "Mechanism of Action": ["RNA interference", "Antisense oligonucleotide", "Novel delivery system"],
-        "Target(s)": ["Gene X", "Protein Y", "Multiple targets"],
-        "Indication": ["Rare Disease A", "Cancer", "Platform technology"],
-        "Clinical Trials": ["Phase 2", "Phase 1", "Preclinical"]
-    }
-    
-    st.dataframe(pd.DataFrame(example_data), use_container_width=True)
+        st.dataframe(
+            st.session_state.filtered_df, 
+            use_container_width=True, 
+            height=600,
+            column_config={
+                "Animal Models/Preclinical Data": st.column_config.TextColumn(
+                    "Animal Models/Preclinical Data",
+                    width="large"
+                ),
+                "Clinical Trials": st.column_config.TextColumn(
+                    "Clinical Trials",
+                    width="large"
+                ),
+                "Upcoming Milestones": st.column_config.TextColumn(
+                    "Upcoming Milestones",
+                    width="medium"
+                ),
+                "References": st.column_config.TextColumn(
+                    "References",
+                    width="medium"
+                )
+            }
+        )
